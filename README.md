@@ -1,6 +1,6 @@
 # mdview
 
-A fast, lightweight Markdown viewer that renders like GitHub. Built for Linux on **ppc64le** (and any other architecture), including **RHEL 8**.
+A fast, lightweight Markdown viewer that renders like GitHub. Built for Linux on **ppc64le** and **x86_64** (and any other architecture), including **RHEL 8**.
 
 mdview draws Markdown natively with GTK3. There's no browser engine, so it starts quickly, uses little memory, and scrolls smoothly over X11 forwarding and VNC.
 
@@ -18,13 +18,13 @@ Markdown is parsed with [comrak](https://github.com/kivikakk/comrak) and highlig
 
 It needs only GTK 3.22+, which RHEL 8 ships. There is no WebKit dependency. The binary is about 4 MB.
 
-## Install on RHEL 8 (ppc64le) without sudo
+## Install on RHEL 8 without sudo (ppc64le or x86_64)
 
-Download the prebuilt binary straight onto the POWER machine. Everything goes in your home directory:
+Download the prebuilt binary for your CPU (`uname -m` prints `ppc64le` or `x86_64`). Everything goes in your home directory:
 
 ```bash
 mkdir -p ~/.local/bin ~/.local/share/applications
-curl -fL -o ~/.local/bin/mdview https://github.com/jmr533/mdview/releases/latest/download/mdview-linux-ppc64le
+curl -fL -o ~/.local/bin/mdview https://github.com/jmr533/mdview/releases/latest/download/mdview-linux-$(uname -m)
 chmod +x ~/.local/bin/mdview
 curl -fL -o ~/.local/share/applications/mdview.desktop https://raw.githubusercontent.com/jmr533/mdview/main/packaging/mdview.desktop
 mdview README.md        # ~/.local/bin is on PATH by default on RHEL 8
@@ -37,11 +37,12 @@ mdview README.md        # ~/.local/bin is on PATH by default on RHEL 8
 On any machine (macOS or Linux, any CPU) with Rust, [zig](https://ziglang.org) and `cargo install cargo-zigbuild`:
 
 ```bash
-rustup target add powerpc64le-unknown-linux-gnu
-packaging/el8-cross/build.sh
+rustup target add powerpc64le-unknown-linux-gnu x86_64-unknown-linux-gnu
+packaging/el8-cross/build.sh ppc64le   # → target/powerpc64le-unknown-linux-gnu/release/mdview
+packaging/el8-cross/build.sh x86_64    # → target/x86_64-unknown-linux-gnu/release/mdview
 ```
 
-The result is `target/powerpc64le-unknown-linux-gnu/release/mdview`. The script downloads RHEL 8–compatible GTK libraries for linking (from AlmaLinux 8) and targets glibc 2.28.
+The script downloads RHEL 8–compatible GTK libraries for linking (from AlmaLinux 8) and targets glibc 2.28.
 
 ## Build on the machine itself
 
