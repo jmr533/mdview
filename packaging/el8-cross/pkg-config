@@ -1,0 +1,27 @@
+#!/bin/sh
+# pkg-config stand-in used by build.sh: points the GTK bindings at the RHEL 8 ppc64le
+# libraries in $MDVIEW_SYSROOT_LIBS. Versions are RHEL 8's.
+g="-lgobject-2.0 -lglib-2.0"
+pkg=""
+ver_mode=0
+for a in "$@"; do
+  case "$a" in
+    --modversion) ver_mode=1 ;;
+    --*) ;;
+    *) [ -z "$pkg" ] && pkg="${a%% *}" ;;
+  esac
+done
+case "$pkg" in
+  gtk+-3.0)       v=3.22.30; l="-lgtk-3 -lgdk-3 -lpangocairo-1.0 -lpango-1.0 -lharfbuzz -latk-1.0 -lcairo-gobject -lcairo -lgdk_pixbuf-2.0 -lgio-2.0 $g" ;;
+  gdk-3.0)        v=3.22.30; l="-lgdk-3 -lpangocairo-1.0 -lpango-1.0 -lharfbuzz -lcairo-gobject -lcairo -lgdk_pixbuf-2.0 -lgio-2.0 $g" ;;
+  atk)            v=2.28.1;  l="-latk-1.0 $g" ;;
+  pango)          v=1.42.4;  l="-lpango-1.0 -lharfbuzz $g" ;;
+  gdk-pixbuf-2.0) v=2.36.12; l="-lgdk_pixbuf-2.0 $g" ;;
+  cairo)          v=1.15.12; l="-lcairo" ;;
+  cairo-gobject)  v=1.15.12; l="-lcairo-gobject -lcairo $g" ;;
+  gio-2.0)        v=2.56.4;  l="-lgio-2.0 $g" ;;
+  gobject-2.0)    v=2.56.4;  l="$g" ;;
+  glib-2.0)       v=2.56.4;  l="-lglib-2.0" ;;
+  *) echo "pkg-config stand-in: unknown package '$pkg'" >&2; exit 1 ;;
+esac
+if [ $ver_mode = 1 ]; then echo "$v"; else echo "-L$MDVIEW_SYSROOT_LIBS $l"; fi
