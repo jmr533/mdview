@@ -5,11 +5,10 @@
 //! rules, checkboxes, alert icons — are recorded as [`Deco`]rations that the view
 //! paints underneath the text.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use comrak::nodes::{AlertType, AstNode, ListType, NodeValue};
 use comrak::{Anchorizer, Arena, Options, parse_document};
@@ -174,7 +173,9 @@ fn mermaid_svg(code: &str, pal: &Palette) -> Option<String> {
     use mermaid_rs_renderer::{RenderOptions, Theme};
     let mut theme = if pal.dark { Theme::dark() } else { Theme::mermaid_default() };
     theme.background = css(pal.canvas);
-    theme.font_family = sans_font().to_string();
+    // Layout measures text with the same font library resvg draws with, so name real families
+    // ("Sans" is a Pango alias it doesn't know).
+    theme.font_family = format!("'{}', 'DejaVu Sans', 'Liberation Sans', Arial, sans-serif", sans_font());
     let svg = mermaid_rs_renderer::render_with_options(code, RenderOptions { theme, ..Default::default() }).ok();
     MERMAID.with_borrow_mut(|m| {
         if m.len() > 64 {
@@ -183,6 +184,34 @@ fn mermaid_svg(code: &str, pal: &Palette) -> Option<String> {
         m.insert(key, svg.clone());
     });
     svg
+}
+
+/// Draws an SVG at `zoom`, no wider than `max`, on an opaque `bg`. Uses resvg rather than
+/// gdk-pixbuf so diagrams don't depend on librsvg's pixbuf loader being installed.
+/// Returns the picture and whether it was shrunk to fit `max`.
+fn rasterize_svg(svg: &str, zoom: f64, max: i32, bg: u32) -> Option<(gdk_pixbuf::Pixbuf, bool)> {
+    use resvg::{tiny_skia, usvg};
+    static FONTDB: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
+    let fontdb = FONTDB.get_or_init(|| {
+        let mut db = usvg::fontdb::Database::new();
+        db.load_system_fonts();
+        Arc::new(db)
+    });
+    let opt = usvg::Options { fontdb: fontdb.clone(), ..Default::default() };
+    let tree = usvg::Tree::from_str(svg, &opt).ok()?;
+    let size = tree.size();
+    let natural = (size.width() as f64 * zoom).round() as i32;
+    let w = natural.min(max).max(1);
+    let scale = w as f32 / size.width();
+    let h = (size.height() * scale).round().max(1.0) as i32;
+    let mut pixmap = tiny_skia::Pixmap::new(w as u32, h as u32)?;
+    let [_, r, g, b] = bg.to_be_bytes();
+    pixmap.fill(tiny_skia::Color::from_rgba8(r, g, b, 255));
+    resvg::render(&tree, tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    // The background is opaque, so tiny-skia's premultiplied RGBA is also plain RGBA.
+    let bytes = gtk::glib::Bytes::from_owned(pixmap.take());
+    let pb = gdk_pixbuf::Pixbuf::from_bytes(&bytes, gdk_pixbuf::Colorspace::Rgb, true, 8, w, h, w * 4);
+    Some((pb, natural > max))
 }
 
 pub fn is_markdown(path: &Path) -> bool {
@@ -1176,26 +1205,12 @@ impl<'a> Renderer<'a> {
     }
 
     /// Renders a ```mermaid block as a picture. Returns false (so the caller shows the source as a
-    /// code block) if the diagram doesn't parse or the SVG can't be loaded.
+    /// code block) if the diagram doesn't parse.
     fn mermaid(&mut self, code: &str) -> bool {
         let Some(svg) = mermaid_svg(code, self.pal) else { return false };
         let max = (self.content_width - self.indent).max(self.s(100.0));
-        let zoom = self.zoom;
-        let capped = Rc::new(Cell::new(false));
-        let loader = gdk_pixbuf::PixbufLoader::new();
-        let c = capped.clone();
-        loader.connect_size_prepared(move |l, w, h| {
-            let mut tw = (w as f64 * zoom).round() as i32;
-            if tw > max {
-                tw = max;
-                c.set(true);
-            }
-            let th = ((h as f64) * tw as f64 / w.max(1) as f64).round() as i32;
-            l.set_size(tw.max(1), th.max(1));
-        });
-        let ok = loader.write(svg.as_bytes()).is_ok() & loader.close().is_ok();
-        let Some(pb) = loader.pixbuf().filter(|_| ok) else { return false };
-        self.out.width_sensitive |= capped.get();
+        let Some((pb, capped)) = rasterize_svg(&svg, self.zoom, max, self.pal.canvas) else { return false };
+        self.out.width_sensitive |= capped;
         let lm = self.indent;
         self.start_para(0, 0, lm, Vec::new());
         let mut end = self.buf.end_iter();

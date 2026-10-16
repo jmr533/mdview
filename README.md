@@ -16,7 +16,7 @@ mdview draws Markdown natively with GTK3. There's no browser engine, so it start
 
 Markdown is parsed with [comrak](https://github.com/kivikakk/comrak) and highlighted with [syntect](https://github.com/trishume/syntect), both pure Rust. The result goes straight into a GTK text view as styled text. Code-block backgrounds, quote bars, table grids, checkboxes and alert icons are painted with cairo underneath the text. Over a remote display, GTK sends compact drawing commands rather than whole page images.
 
-It needs only GTK 3.22+, which RHEL 8 ships. There is no WebKit dependency. The binary is about 4 MB.
+It needs only GTK 3.22+, which RHEL 8 ships. There is no WebKit dependency. The binary is about 9 MB.
 
 ## Install on RHEL 8 without sudo (ppc64le or x86_64)
 
