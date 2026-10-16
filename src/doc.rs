@@ -5,8 +5,10 @@
 //! rules, checkboxes, alert icons — are recorded as [`Deco`]rations that the view
 //! paints underneath the text.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::OnceLock;
 
 use comrak::nodes::{AlertType, AstNode, ListType, NodeValue};
@@ -19,7 +21,7 @@ use syntect::highlighting::FontStyle;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
-use crate::theme::{Palette, rgba};
+use crate::theme::{Palette, css, rgba};
 
 const SANS: &[&str] = &["Noto Sans", "Red Hat Text", "Cantarell", "Helvetica Neue", "Segoe UI", "DejaVu Sans", "Liberation Sans"];
 const MONO: &[&str] = &["DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", "Red Hat Mono", "SF Mono", "Menlo", "Consolas"];
@@ -158,6 +160,30 @@ fn find_syntax<'a>(ss: &'a SyntaxSet, lang: &str) -> Option<&'a SyntaxReference>
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+thread_local! {
+    /// Rendered SVG by (dark, source), so re-renders on resize or zoom skip layout.
+    static MERMAID: RefCell<HashMap<(bool, String), Option<String>>> = RefCell::new(HashMap::new());
+}
+
+fn mermaid_svg(code: &str, pal: &Palette) -> Option<String> {
+    let key = (pal.dark, code.to_string());
+    if let Some(hit) = MERMAID.with_borrow(|m| m.get(&key).cloned()) {
+        return hit;
+    }
+    use mermaid_rs_renderer::{RenderOptions, Theme};
+    let mut theme = if pal.dark { Theme::dark() } else { Theme::mermaid_default() };
+    theme.background = css(pal.canvas);
+    theme.font_family = sans_font().to_string();
+    let svg = mermaid_rs_renderer::render_with_options(code, RenderOptions { theme, ..Default::default() }).ok();
+    MERMAID.with_borrow_mut(|m| {
+        if m.len() > 64 {
+            m.clear();
+        }
+        m.insert(key, svg.clone());
+    });
+    svg
+}
 
 pub fn is_markdown(path: &Path) -> bool {
     match path.extension().and_then(|e| e.to_str()) {
@@ -840,7 +866,9 @@ impl<'a> Renderer<'a> {
             NodeValue::CodeBlock(cb) => {
                 let lang = cb.info.split([' ', ',', '{']).next().unwrap_or("").to_string();
                 let code = cb.literal.strip_suffix('\n').unwrap_or(&cb.literal).to_string();
-                self.code_block(&code, &lang);
+                if !(lang.eq_ignore_ascii_case("mermaid") && self.mermaid(&code)) {
+                    self.code_block(&code, &lang);
+                }
             }
             NodeValue::HtmlBlock(h) => {
                 self.html(&h.literal, true);
@@ -1145,6 +1173,36 @@ impl<'a> Renderer<'a> {
         self.finish_para(pad);
         self.out.decos.push(Deco { kind: DecoKind::CodeBlock { code: code.to_string() }, start, end, indent, top_inset: gap });
         self.end_block(self.s(16.0));
+    }
+
+    /// Renders a ```mermaid block as a picture. Returns false (so the caller shows the source as a
+    /// code block) if the diagram doesn't parse or the SVG can't be loaded.
+    fn mermaid(&mut self, code: &str) -> bool {
+        let Some(svg) = mermaid_svg(code, self.pal) else { return false };
+        let max = (self.content_width - self.indent).max(self.s(100.0));
+        let zoom = self.zoom;
+        let capped = Rc::new(Cell::new(false));
+        let loader = gdk_pixbuf::PixbufLoader::new();
+        let c = capped.clone();
+        loader.connect_size_prepared(move |l, w, h| {
+            let mut tw = (w as f64 * zoom).round() as i32;
+            if tw > max {
+                tw = max;
+                c.set(true);
+            }
+            let th = ((h as f64) * tw as f64 / w.max(1) as f64).round() as i32;
+            l.set_size(tw.max(1), th.max(1));
+        });
+        let ok = loader.write(svg.as_bytes()).is_ok() & loader.close().is_ok();
+        let Some(pb) = loader.pixbuf().filter(|_| ok) else { return false };
+        self.out.width_sensitive |= capped.get();
+        let lm = self.indent;
+        self.start_para(0, 0, lm, Vec::new());
+        let mut end = self.buf.end_iter();
+        self.buf.insert_pixbuf(&mut end, &pb);
+        self.finish_para(0);
+        self.end_block(self.s(16.0));
+        true
     }
 
     fn table<'n>(&mut self, node: &'n AstNode<'n>, ncols: usize) {

@@ -4,7 +4,7 @@ A fast, lightweight Markdown viewer that renders like GitHub. Built for Linux on
 
 mdview draws Markdown natively with GTK3. There's no browser engine, so it starts quickly, uses little memory, and scrolls smoothly over X11 forwarding and VNC.
 
-- GitHub Flavored Markdown: tables, task lists, footnotes, autolinks, strikethrough, `> [!NOTE]` alerts, `:emoji:` shortcodes, front matter, and common inline HTML (`<img>`, `<br>`, `<kbd>`, `<details>`, `align="center"`)
+- GitHub Flavored Markdown: tables, task lists, footnotes, autolinks, strikethrough, `> [!NOTE]` alerts, `:emoji:` shortcodes, front matter, ```` ```mermaid ```` diagrams (rendered natively), and common inline HTML (`<img>`, `<br>`, `<kbd>`, `<details>`, `align="center"`)
 - Syntax highlighting with GitHub's light and dark color palettes
 - Light, dark, or follow-the-system theme
 - **Live reload**: the view updates when the file changes on disk and keeps your place

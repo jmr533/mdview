@@ -56,6 +56,23 @@ cargo build --release && ./target/release/mdview README.md
 + new line
 ```
 
+## Diagrams
+
+```mermaid
+flowchart LR
+    A[Markdown] --> B{comrak}
+    B --> C[Text buffer]
+    B --> D[Mermaid SVG]
+    D --> C
+```
+
+```mermaid
+sequenceDiagram
+    Editor->>mdview: file saved
+    mdview->>mdview: re-render
+    mdview-->>Editor: same scroll position
+```
+
 ## Tables
 
 | Feature | Status | Notes |
