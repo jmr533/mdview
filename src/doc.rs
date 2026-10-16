@@ -5,9 +5,10 @@
 //! rules, checkboxes, alert icons — are recorded as [`Deco`]rations that the view
 //! paints underneath the text.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use comrak::nodes::{AlertType, AstNode, ListType, NodeValue};
 use comrak::{Anchorizer, Arena, Options, parse_document};
@@ -19,7 +20,7 @@ use syntect::highlighting::FontStyle;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
-use crate::theme::{Palette, rgba};
+use crate::theme::{Palette, css, rgba};
 
 const SANS: &[&str] = &["Noto Sans", "Red Hat Text", "Cantarell", "Helvetica Neue", "Segoe UI", "DejaVu Sans", "Liberation Sans"];
 const MONO: &[&str] = &["DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", "Red Hat Mono", "SF Mono", "Menlo", "Consolas"];
@@ -158,6 +159,60 @@ fn find_syntax<'a>(ss: &'a SyntaxSet, lang: &str) -> Option<&'a SyntaxReference>
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+thread_local! {
+    /// Rendered SVG by (dark, source), so re-renders on resize or zoom skip layout.
+    static MERMAID: RefCell<HashMap<(bool, String), Option<String>>> = RefCell::new(HashMap::new());
+}
+
+fn mermaid_svg(code: &str, pal: &Palette) -> Option<String> {
+    let key = (pal.dark, code.to_string());
+    if let Some(hit) = MERMAID.with_borrow(|m| m.get(&key).cloned()) {
+        return hit;
+    }
+    use mermaid_rs_renderer::{RenderOptions, Theme};
+    let mut theme = if pal.dark { Theme::dark() } else { Theme::mermaid_default() };
+    theme.background = css(pal.canvas);
+    // Layout measures text with the same font library resvg draws with, so name real families
+    // ("Sans" is a Pango alias it doesn't know).
+    theme.font_family = format!("'{}', 'DejaVu Sans', 'Liberation Sans', Arial, sans-serif", sans_font());
+    let svg = mermaid_rs_renderer::render_with_options(code, RenderOptions { theme, ..Default::default() }).ok();
+    MERMAID.with_borrow_mut(|m| {
+        if m.len() > 64 {
+            m.clear();
+        }
+        m.insert(key, svg.clone());
+    });
+    svg
+}
+
+/// Draws an SVG at `zoom`, no wider than `max`, on an opaque `bg`. Uses resvg rather than
+/// gdk-pixbuf so diagrams don't depend on librsvg's pixbuf loader being installed.
+/// Returns the picture and whether it was shrunk to fit `max`.
+fn rasterize_svg(svg: &str, zoom: f64, max: i32, bg: u32) -> Option<(gdk_pixbuf::Pixbuf, bool)> {
+    use resvg::{tiny_skia, usvg};
+    static FONTDB: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
+    let fontdb = FONTDB.get_or_init(|| {
+        let mut db = usvg::fontdb::Database::new();
+        db.load_system_fonts();
+        Arc::new(db)
+    });
+    let opt = usvg::Options { fontdb: fontdb.clone(), ..Default::default() };
+    let tree = usvg::Tree::from_str(svg, &opt).ok()?;
+    let size = tree.size();
+    let natural = (size.width() as f64 * zoom).round() as i32;
+    let w = natural.min(max).max(1);
+    let scale = w as f32 / size.width();
+    let h = (size.height() * scale).round().max(1.0) as i32;
+    let mut pixmap = tiny_skia::Pixmap::new(w as u32, h as u32)?;
+    let [_, r, g, b] = bg.to_be_bytes();
+    pixmap.fill(tiny_skia::Color::from_rgba8(r, g, b, 255));
+    resvg::render(&tree, tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    // The background is opaque, so tiny-skia's premultiplied RGBA is also plain RGBA.
+    let bytes = gtk::glib::Bytes::from_owned(pixmap.take());
+    let pb = gdk_pixbuf::Pixbuf::from_bytes(&bytes, gdk_pixbuf::Colorspace::Rgb, true, 8, w, h, w * 4);
+    Some((pb, natural > max))
+}
 
 pub fn is_markdown(path: &Path) -> bool {
     match path.extension().and_then(|e| e.to_str()) {
@@ -840,7 +895,9 @@ impl<'a> Renderer<'a> {
             NodeValue::CodeBlock(cb) => {
                 let lang = cb.info.split([' ', ',', '{']).next().unwrap_or("").to_string();
                 let code = cb.literal.strip_suffix('\n').unwrap_or(&cb.literal).to_string();
-                self.code_block(&code, &lang);
+                if !(lang.eq_ignore_ascii_case("mermaid") && self.mermaid(&code)) {
+                    self.code_block(&code, &lang);
+                }
             }
             NodeValue::HtmlBlock(h) => {
                 self.html(&h.literal, true);
@@ -1145,6 +1202,22 @@ impl<'a> Renderer<'a> {
         self.finish_para(pad);
         self.out.decos.push(Deco { kind: DecoKind::CodeBlock { code: code.to_string() }, start, end, indent, top_inset: gap });
         self.end_block(self.s(16.0));
+    }
+
+    /// Renders a ```mermaid block as a picture. Returns false (so the caller shows the source as a
+    /// code block) if the diagram doesn't parse.
+    fn mermaid(&mut self, code: &str) -> bool {
+        let Some(svg) = mermaid_svg(code, self.pal) else { return false };
+        let max = (self.content_width - self.indent).max(self.s(100.0));
+        let Some((pb, capped)) = rasterize_svg(&svg, self.zoom, max, self.pal.canvas) else { return false };
+        self.out.width_sensitive |= capped;
+        let lm = self.indent;
+        self.start_para(0, 0, lm, Vec::new());
+        let mut end = self.buf.end_iter();
+        self.buf.insert_pixbuf(&mut end, &pb);
+        self.finish_para(0);
+        self.end_block(self.s(16.0));
+        true
     }
 
     fn table<'n>(&mut self, node: &'n AstNode<'n>, ncols: usize) {
